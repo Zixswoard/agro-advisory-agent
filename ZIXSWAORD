@@ -1,0 +1,200 @@
+# 🌾 AgriGuard — Agro-Advisory Agent for Nepali Smallholder Farmers
+
+**AgriGuard** is a multi-agent advisory system that gives smallholder farmers in
+Nepal fast, localized answers on crop timing, market prices, and pest/disease
+management — with hard, deterministic safety guardrails around chemical and
+pesticide advice, so the agent can never become the source of a harmful dosage
+recommendation.
+
+Built for the Kaggle **"5-Day AI Agents: Intensive Vibe Coding Course"** capstone
+(*Kaggriculture*), submitted to the **Agents for Good** track.
+
+![AgriGuard interface](agriguard-ui.png)
+
+---
+
+## 1. The Problem
+
+Smallholder farmers in Nepal routinely make high-stakes decisions — when to sow,
+how to identify and respond to a pest outbreak, where to get a fair market price —
+often without access to a local agronomist or extension officer. Getting these
+decisions wrong is costly: a delayed sowing date can shrink a harvest, and an
+incorrect pesticide dosage is a real safety hazard, not just a wrong answer.
+
+General-purpose LLMs are not a safe substitute here. They will confidently produce
+exact pesticide dosages, chemical names, and "facts" about local market prices that
+may be outdated, hallucinated, or simply wrong for the region — with no built-in
+mechanism to recognize when a question needs a deterministic answer, a careful
+LLM-reasoned answer, or no chemical-specific answer at all.
+
+## 2. The Solution
+
+AgriGuard routes every incoming query through a classification step, then sends it
+down one of four paths — deterministic lookups where the answer is a fact, an LLM
+specialist where the answer needs reasoning, and a hard safety gate around any
+chemical/dosage content, enforced in code rather than left to a prompt's good
+intentions.
+
+**Why an agent, not a single LLM call:**
+- Crop timing and market price questions have *correct, factual* answers that
+  shouldn't be left to an LLM to "remember" — they're routed to deterministic
+  Python lookups against local data instead.
+- Pest/disease diagnosis genuinely needs reasoning, so that path goes to an LLM —
+  but with two independent safety layers wrapped around it (see below).
+- Off-topic queries are politely declined rather than answered speculatively.
+
+## 3. Architecture
+
+```
+                        ┌─────────────────────┐
+   Farmer query  ────▶  │   Classifier Node    │
+                        └──────────┬───────────┘
+                                   │
+        ┌──────────────┬──────────┼──────────────┬───────────────┐
+        ▼              ▼          ▼               ▼               
+ ┌─────────────┐ ┌─────────────┐ │        ┌───────────────┐
+ │ crop_timing │ │market_price │ │        │    general    │
+ │ (Python,    │ │ (Python,    │ │        │ (polite       │
+ │ JSON lookup)│ │ JSON lookup)│ │        │  decline)     │
+ └─────────────┘ └─────────────┘ │        └───────────────┘
+                                   ▼
+                         ┌──────────────────────┐
+                         │  Security Screen      │  ◀── pre-LLM input gate
+                         │  (jailbreak / direct   │      blocks dosage requests
+                         │   dosage detection)    │      before the model sees them
+                         └──────────┬────────────┘
+                                    │ (only clean queries pass)
+                                    ▼
+                         ┌──────────────────────┐
+                         │  pest_disease LLM     │  ◀── gemini-3.1-flash-lite
+                         │  node                 │
+                         └──────────┬────────────┘
+                                    ▼
+                         ┌──────────────────────┐
+                         │ Guardrail Skill       │  ◀── post-LLM output validator
+                         │ (validate_pest_advice) │      strips/rewrites any chemical
+                         └──────────┬────────────┘      names or numeric dosages
+                                    ▼
+                              Response to farmer
+```
+
+### Defense in depth: two independent safety layers
+
+1. **Pre-LLM input gate (security screen)** — runs *before* the query ever reaches
+   `gemini-3.1-flash-lite`. Detects dosage-extraction attempts (direct asks,
+   roleplay/jailbreak framing, unit-scaling reframes) and short-circuits straight
+   to a safe fallback response. No model call happens at all for a blocked query.
+2. **Post-LLM output guardrail (`pest-advice-guardrail` skill)** — a real Agent
+   Skill with a deterministic Python validator (`validate_response.py`) that scans
+   every pest/disease response for chemical names or numeric dosages before it's
+   shown to the user, as a backstop in case a phrasing slips past the input gate.
+
+This two-layer design was deliberately tested with adversarial prompts (direct
+asks, roleplay framing, math/unit reframes, euphemisms) during development — see
+[Safety Testing](#5-safety-testing) below.
+
+## 4. Tech Stack
+
+| Component | Tool |
+|---|---|
+| Agent framework | ADK 2.0 (graph workflow) |
+| Model | `gemini-3.1-flash-lite` |
+| Local dev/testing | `agents-cli playground` |
+| Agent skills | `.agents/skills/pest-advice-guardrail/` |
+| Input validation | Pydantic schemas |
+| Static security scanning | Semgrep (pre-commit hook) |
+| Evaluation | LLM-as-judge, synthetic eval dataset |
+| Debugging assist | Antigravity (used to diagnose and fix a detection gap in the output guardrail — see commit history) |
+
+## 5. Safety Testing
+
+The guardrail was validated against adversarial phrasings designed to extract a
+pesticide dosage, including direct requests, roleplay/jailbreak framing, and
+unit-scaling reframes. Logging at both checkpoints (`[INPUT_GATE_BLOCKED]` /
+`[MODEL_CALL]`) confirmed that blocked queries never reach the model — see
+`docs/guardrail_safety_test.md` for the full test log and methodology.
+
+## 6. Evaluation
+
+A synthetic eval dataset (`tests/eval/basic-dataset.json`) covers 6 scenarios —
+two crop_timing, two market_price, one pest_disease query with an embedded
+prompt-injection attempt, and one off-topic query — scored against two
+LLM-as-judge metrics defined in `eval_config.yaml`:
+
+- **Routing Correctness** — did the query reach the correct node?
+- **Guardrail Containment** — zero chemical names/dosages leaked, even under
+  adversarial phrasing.
+
+*(Add your scorecard results here once finalized.)*
+
+## 7. Project Structure
+
+```
+agro-advisory-agent/
+├── app/
+│   └── agent.py                  # graph workflow: nodes, edges, routing logic
+├── .agents/
+│   ├── CONTEXT.md                # paved-road rules (Pydantic validation,
+│   │                              #   guardrail-before-response, no fabricated data)
+│   └── skills/
+│       └── pest-advice-guardrail/
+│           ├── SKILL.md
+│           └── scripts/
+│               └── validate_response.py
+├── tests/
+│   └── eval/
+│       └── basic-dataset.json
+├── eval_config.yaml
+├── docs/
+│   ├── guardrail_safety_test.md
+│   └── agriguard-ui.png
+├── .pre-commit-config.yaml
+└── README.md
+```
+
+## 8. Setup & Local Run
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/<your-username>/agro-advisory-agent.git
+cd agro-advisory-agent
+
+# 2. Set your Gemini API key (get one free at aistudio.google.com)
+export GEMINI_API_KEY="your_key_here"
+
+# 3. Install the Agents CLI
+uvx google-agents-cli setup
+
+# 4. (Optional) check available skills
+agents-cli info
+
+# 5. Install pre-commit hooks (Semgrep + formatting checks)
+pre-commit install
+
+# 6. Launch the local playground
+agents-cli playground
+```
+
+Then open the printed `http://localhost:XXXX` URL in your browser to chat with
+AgriGuard directly.
+
+**No API keys or secrets are committed to this repo** — set `GEMINI_API_KEY` as an
+environment variable as shown above.
+
+## 9. Limitations & Future Work
+
+- Currently runs locally via `agents-cli playground`; not deployed to a public
+  endpoint for judging purposes (per competition rules, this isn't required). The
+  graph nodes are largely stateless aside from session memory, so containerizing
+  and deploying to Cloud Run would require minimal changes.
+- Crop timing and market price data currently covers a limited set of
+  districts/crops — expanding the JSON datasets is the most direct path to wider
+  usefulness.
+- No native Nepali-language support yet; this is a natural next addition given the
+  target users.
+
+## 10. Acknowledgments
+
+Built as part of Google & Kaggle's **5-Day AI Agents: Intensive Vibe Coding
+Course**, June 2026. Debugging assistance for the output guardrail's detection
+logic was provided by Antigravity.
