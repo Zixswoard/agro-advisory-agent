@@ -22,7 +22,6 @@ from google import genai
 from google.genai import types
 from google.adk.agents import LlmAgent
 from google.adk.apps import App
-from google.adk.models import Gemini
 from google.adk.workflow import Workflow, START
 from google.adk.events.event import Event
 from google.adk.agents.context import Context
@@ -162,13 +161,11 @@ def lookup_market_price(node_input: str) -> Event:
     )
 
 
-pest_disease_agent = LlmAgent(
-    name="pest_disease_agent",
-    model=Gemini(
-        model="gemini-3.1-flash-lite",
-        retry_options=types.HttpRetryOptions(attempts=3),
-    ),
-    instruction="You are an expert plant pathologist and agronomist. Answer the farmer's query regarding pests and diseases. Provide helpful, actionable, and safe advice to control/manage the pest or disease.",
+PEST_DISEASE_INSTRUCTION = (
+    "You are an expert plant pathologist and agronomist. "
+    "Answer the farmer's query regarding pests and diseases. "
+    "Provide helpful, actionable, and safe advice to control/manage the pest or disease. "
+    "Do NOT mention specific pesticide chemical names or numeric dosages."
 )
 
 
@@ -311,9 +308,32 @@ def pest_disease_screen(node_input: str) -> Event:
 
 
 def run_pest_disease_agent(ctx: Context, node_input: Any) -> Event:
-    """Wrapper node to log model calls right before running the pest_disease_agent."""
-    print("[MODEL_CALL] Calling pest_disease_agent...")
-    return pest_disease_agent(ctx, node_input)
+    """Runs a direct Gemini API call for pest and disease diagnosis advice."""
+    print("[MODEL_CALL] Calling pest_disease_agent via Gemini API...")
+
+    # Extract the query text from node_input
+    query_text = ""
+    if isinstance(node_input, str):
+        query_text = node_input
+    elif hasattr(node_input, "parts") and node_input.parts:
+        query_text = node_input.parts[0].text or ""
+    elif hasattr(node_input, "text"):
+        query_text = node_input.text or ""
+    else:
+        query_text = str(node_input)
+
+    response = client.models.generate_content(
+        model="gemini-3.1-flash-lite",
+        contents=query_text,
+        config=types.GenerateContentConfig(
+            system_instruction=PEST_DISEASE_INSTRUCTION,
+        ),
+    )
+    result_text = response.text or ""
+    return Event(
+        output=result_text,
+        content=types.Content(role="model", parts=[types.Part.from_text(text=result_text)]),
+    )
 
 
 # Setup graph workflow
