@@ -4,7 +4,8 @@
 
 Built for the **Kaggle "5-Day AI Agents: Intensive Vibe Coding Course"** capstone (*Kaggriculture*), submitted to the **Agents for Good** track.
 
-![AgriGuard Interface](agriguard-ui.png)
+![AgriGuard Interface](<img width="1484" height="836" alt="Screenshot 2026-06-29 173705" src="https://github.com/user-attachments/assets/0c52f179-9e93-4497-b198-9149f8232020" />
+)
 
 ---
 
